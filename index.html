@@ -9,29 +9,59 @@ async function role(){admin=false;const {data:{session}}=await client.auth.getSe
 async function load(){if(busy)return;busy=true;try{const [a,b]=await Promise.all([client.from('people').select('*').order('name').limit(1000),client.from('relationships').select('*').limit(1000)]);if(a.error)throw a.error;if(b.error)throw b.error;people=a.data;rels=b.data;render();$('status').textContent=people.length+' családtag · Frissítve: '+new Date().toLocaleTimeString('hu-HU')+(people.length>=1000||rels.length>=1000?' · Elérte a tesztverzió 1000 soros lekérési korlátját.':'')}catch(e){fail(e);$('status').textContent='Az adatok betöltése nem sikerült.'}finally{busy=false}}
 function card(p){return `<button class="person" data-person="${esc(p.id)}"><span class="avatar">${esc(p.name.split(' ').map(x=>x[0]).slice(0,2).join(''))}</span><strong>${esc(p.name)}</strong><span class="muted">${esc(p.birth_info)}${p.death_info?' – '+esc(p.death_info):''}</span></button>`}
 function render(){
- const tree=$('tree');if(!people.length){tree.style.cssText='';tree.innerHTML='<p>Még nincs családtag. Az admin belépés után felveheti az első személyt.</p>';return;}
- const ids=new Set(people.map(p=>p.id)),root=new Map(people.map(p=>[p.id,p.id]));
- function leader(id){let r=id;while(root.get(r)!==r)r=root.get(r);return r;}
- function join(a,b){a=leader(a);b=leader(b);if(a!==b)root.set(b,a);}
- for(const r of rels)if(r.relationship_type==='partner'&&ids.has(r.person_a)&&ids.has(r.person_b))join(r.person_a,r.person_b);
- const groups=new Map();for(const p of people){let id=leader(p.id);if(!groups.has(id))groups.set(id,{id,members:[],children:new Set(),parents:new Set(),x:0,level:0});groups.get(id).members.push(p);}
- const block=new Map([...groups.keys()].map(id=>[id,id]));
- function blockId(id){while(block.get(id)!==id)id=block.get(id);return id;}
- for(const r of rels)if(r.relationship_type==='sibling'&&ids.has(r.person_a)&&ids.has(r.person_b)){let a=blockId(leader(r.person_a)),b=blockId(leader(r.person_b));if(a!==b)block.set(b,a);}
- const blocks=new Map();for(const g of groups.values()){let id=blockId(g.id);if(!blocks.has(id))blocks.set(id,{id,parents:new Set(),children:new Set(),level:0});g.block=id;}
+ const tree=$('tree');
+ if(!people.length){tree.style.cssText='';tree.innerHTML='<p>Még nincs családtag. Az admin belépés után felveheti az első személyt.</p>';return;}
+ const ids=new Set(people.map(p=>p.id)),uf=new Map(people.map(p=>[p.id,p.id]));
+ function root(id){while(uf.get(id)!==id)id=uf.get(id);return id;}
+ for(const r of rels)if(r.relationship_type==='partner'&&ids.has(r.person_a)&&ids.has(r.person_b)){let a=root(r.person_a),b=root(r.person_b);if(a!==b)uf.set(b,a);}
+ const groups=new Map();for(const p of people){let id=root(p.id);if(!groups.has(id))groups.set(id,{id,members:[],parents:new Set(),children:new Set(),owned:[],level:0,x:0,y:0});groups.get(id).members.push(p);}
+ const bu=new Map([...groups.keys()].map(id=>[id,id]));function blockRoot(id){while(bu.get(id)!==id)id=bu.get(id);return id;}
+ for(const r of rels)if(r.relationship_type==='sibling'&&ids.has(r.person_a)&&ids.has(r.person_b)){let a=blockRoot(root(r.person_a)),b=blockRoot(root(r.person_b));if(a!==b)bu.set(b,a);}
+ const blocks=new Map();for(const g of groups.values()){g.block=blockRoot(g.id);if(!blocks.has(g.block))blocks.set(g.block,{id:g.block,parents:new Set(),children:new Set(),level:0});}
  let invalid=false;
- for(const r of rels){if(r.relationship_type!=='parent_child'||!ids.has(r.person_a)||!ids.has(r.person_b))continue;let a=groups.get(leader(r.person_a)),b=groups.get(leader(r.person_b));if(a.block===b.block){invalid=true;continue;}a.children.add(b.id);b.parents.add(a.id);blocks.get(a.block).children.add(b.block);blocks.get(b.block).parents.add(a.block);}
- let degrees=new Map([...blocks].map(([id,b])=>[id,b.parents.size])),q=[...blocks.values()].filter(b=>!b.parents.size);
- for(let i=0;i<q.length;i++){let b=q[i];for(let id of b.children){let c=blocks.get(id);c.level=Math.max(c.level,b.level+1);degrees.set(id,degrees.get(id)-1);if(!degrees.get(id))q.push(c);}}
- if(invalid||q.length!==blocks.size){tree.style.cssText='display:block;min-width:0';tree.innerHTML='<p>Az adatokban a generációs elrendezésnek ellentmondó kapcsolat van. Az adatlapokon ellenőrizd a szülő-, pár- és testvérkapcsolatokat.</p><div style="display:flex;gap:15px;flex-wrap:wrap">'+people.map(card).join('')+'</div>';}
- else{let layers=[];for(let g of groups.values()){g.level=blocks.get(g.block).level;g.width=g.members.length*168+(g.members.length-1)*15;(layers[g.level]??=[]).push(g);}
- const gap=50,pad=30,rowHeight=220;let width=Math.max(...layers.filter(Boolean).map(row=>row.reduce((n,g)=>n+g.width,0)+(row.length-1)*gap))+pad*2;
- for(let row of layers){if(!row)continue;let total=row.reduce((n,g)=>n+g.width,0)+(row.length-1)*gap,x=(width-total)/2;for(let g of row){g.x=x;x+=g.width+gap;}}
- let height=layers.length*rowHeight+pad*2,paths='';for(let g of groups.values())for(let id of g.children){let c=groups.get(id),x1=g.x+g.width/2,x2=c.x+c.width/2,y1=pad+g.level*rowHeight+150,y2=pad+c.level*rowHeight;paths+=`<path d="M ${x1} ${y1} V ${y2-32} H ${x2} V ${y2}"/>`;}
- let siblingLines='';for(let r of rels){if(r.relationship_type!=='sibling'||!ids.has(r.person_a)||!ids.has(r.person_b))continue;let a=groups.get(leader(r.person_a)),b=groups.get(leader(r.person_b));if(a===b)continue;let left=a.x<b.x?a:b,right=left===a?b:a,y=pad+a.level*rowHeight+15;siblingLines+=`<path d="M ${left.x+left.width} ${y} H ${right.x}"/>`;}
+ for(const r of rels){if(r.relationship_type!=='parent_child'||!ids.has(r.person_a)||!ids.has(r.person_b))continue;let a=groups.get(root(r.person_a)),b=groups.get(root(r.person_b));if(a.block===b.block){invalid=true;continue;}a.children.add(b.id);b.parents.add(a.id);blocks.get(a.block).children.add(b.block);blocks.get(b.block).parents.add(a.block);}
+ const degree=new Map([...blocks].map(([id,b])=>[id,b.parents.size])),queue=[...blocks.values()].filter(b=>!b.parents.size);
+ for(let i=0;i<queue.length;i++){let b=queue[i];for(const id of b.children){let c=blocks.get(id);c.level=Math.max(c.level,b.level+1);degree.set(id,degree.get(id)-1);if(!degree.get(id))queue.push(c);}}
+ if(invalid||queue.length!==blocks.size){tree.style.cssText='display:block;min-width:0';tree.innerHTML='<p>Ellentmondó generációs kapcsolat. Az adatlapokon ellenőrizd a szülő-, pár- és testvérkapcsolatokat.</p><div style="display:flex;gap:15px;flex-wrap:wrap">'+people.map(card).join('')+'</div>';tree.querySelectorAll('[data-person]').forEach(b=>b.onclick=()=>profile(b.dataset.person));return;}
+ const CARD=168,GAP=15,HEIGHT=150,BRANCH=75,PAD=35;
+ for(const g of groups.values()){g.level=blocks.get(g.block).level;g.width=g.members.length*CARD+(g.members.length-1)*GAP;}
+ // Each descendant branch gets its own horizontal space.
+ for(const g of groups.values()){
+  const candidates=[...g.parents].map(id=>groups.get(id)).sort((a,b)=>b.level-a.level||String(a.id).localeCompare(String(b.id)));
+  g.owner=candidates[0]||null;if(g.owner)g.owner.owned.push(g);
+ }
+ const compare=(a,b)=>a.members[0].name.localeCompare(b.members[0].name,'hu');
+ for(const g of groups.values())g.owned.sort(compare);
+ function measure(g){const childWidth=g.owned.reduce((sum,c)=>sum+measure(c),0)+Math.max(0,g.owned.length-1)*BRANCH;g.span=Math.max(g.width,childWidth);return g.span;}
+ const roots=[...groups.values()].filter(g=>!g.owner).sort(compare);roots.forEach(measure);
+ const rowSourceCounts=new Map();for(const g of groups.values())if(g.children.size)rowSourceCounts.set(g.level,(rowSourceCounts.get(g.level)||0)+1);
+ const maxLevel=Math.max(...[...groups.values()].map(g=>g.level));const ys=[PAD];
+ for(let level=0;level<maxLevel;level++)ys.push(ys[level]+HEIGHT+100+Math.max(0,(rowSourceCounts.get(level)||0)-1)*12);
+ function place(g,left){g.x=left+(g.span-g.width)/2;g.y=ys[g.level];const total=g.owned.reduce((sum,c)=>sum+c.span,0)+Math.max(0,g.owned.length-1)*BRANCH;let x=left+(g.span-total)/2;for(const c of g.owned){place(c,x);x+=c.span+BRANCH;}}
+ let cursor=PAD;for(const g of roots){place(g,cursor);cursor+=g.span+BRANCH;}const width=Math.max(350,cursor-BRANCH+PAD),height=ys[maxLevel]+HEIGHT+PAD;
+ const lanes=new Map();let paths='';
+ const ordered=[...groups.values()].sort((a,b)=>a.level-b.level||a.x-b.x);
+ for(const g of ordered){if(!g.children.size)continue;let lane=lanes.get(g.level)||0;lanes.set(g.level,lane+1);
+  const bus=g.y+HEIGHT+28+lane*12;
+  // Separate child targets within a couple, rather than treating both partners as children.
+  const targets=new Map();const parentIds=new Set();
+  for(const r of rels){if(r.relationship_type!=='parent_child'||!ids.has(r.person_a)||!ids.has(r.person_b)||root(r.person_a)!==g.id)continue;targets.set(r.person_b,r.person_b);parentIds.add(r.person_a);}
+  if(!targets.size)continue;
+  const sourceXs=[...parentIds].map(id=>g.x+g.members.findIndex(p=>p.id===id)*(CARD+GAP)+CARD/2);
+  const sx=sourceXs.reduce((a,b)=>a+b,0)/sourceXs.length;
+  let endpoints=[...targets.keys()].map(id=>{const c=groups.get(root(id));return {x:c.x+c.members.findIndex(p=>p.id===id)*(CARD+GAP)+CARD/2,y:c.y};});
+  const lo=Math.min(sx,...endpoints.map(e=>e.x)),hi=Math.max(sx,...endpoints.map(e=>e.x));
+  paths+=`<path d="M ${sx} ${g.y+HEIGHT} V ${bus} M ${lo} ${bus} H ${hi}"/>`;
+  for(const e of endpoints)paths+=`<path d="M ${e.x} ${bus} V ${e.y}"/>`;
+ }
+ let siblings='';const drawn=new Set();
+ for(const r of rels){if(r.relationship_type!=='sibling'||!ids.has(r.person_a)||!ids.has(r.person_b))continue;
+  const common=rels.some(p=>p.relationship_type==='parent_child'&&p.person_b===r.person_a&&rels.some(q=>q.relationship_type==='parent_child'&&q.person_a===p.person_a&&q.person_b===r.person_b));if(common)continue;
+  let a=groups.get(root(r.person_a)),b=groups.get(root(r.person_b));if(a===b)continue;let key=[a.id,b.id].sort().join(':');if(drawn.has(key))continue;drawn.add(key);let l=a.x<b.x?a:b,rr=l===a?b:a,y=a.y+18;siblings+=`<path d="M ${l.x+l.width} ${y} H ${rr.x}"/>`;
+ }
  tree.style.cssText=`display:block;position:relative;width:${width}px;min-width:${width}px;height:${height}px;padding:0;margin:0 auto;isolation:isolate`;
- tree.innerHTML=`<svg aria-hidden="true" width="${width}" height="${height}" style="position:absolute;inset:0;pointer-events:none"><g fill="none" stroke="#9eaf9c" stroke-width="2">${paths}</g><g fill="none" stroke="#bc9857" stroke-width="2" stroke-dasharray="5 5">${siblingLines}</g></svg>`+[...groups.values()].map(g=>`<div class="couple" style="position:absolute;left:${g.x}px;top:${pad+g.level*rowHeight}px;height:150px;align-items:stretch">${g.members.map(card).join('')}</div>`).join('');tree.querySelectorAll('.person').forEach(b=>b.style.height='150px');}
- tree.querySelectorAll('[data-person]').forEach(b=>b.onclick=()=>profile(b.dataset.person));
+ tree.innerHTML=`<svg aria-hidden="true" width="${width}" height="${height}" style="position:absolute;inset:0;pointer-events:none"><g fill="none" stroke="#93a58f" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</g><g fill="none" stroke="#bc9857" stroke-width="2" stroke-dasharray="5 5">${siblings}</g></svg>`+ordered.map(g=>`<div class="couple" style="position:absolute;left:${g.x}px;top:${g.y}px;height:${HEIGHT}px;align-items:stretch">${g.members.map(card).join('')}</div>`).join('');
+ tree.querySelectorAll('.person').forEach(b=>b.style.height=HEIGHT+'px');tree.querySelectorAll('[data-person]').forEach(b=>b.onclick=()=>profile(b.dataset.person));
 }
 
 function fields(p={}){return `<label>Név *</label><input id="name" maxlength="150" required value="${esc(p.name||'')}"><label>Születési név</label><input id="birth_name" maxlength="150" value="${esc(p.birth_name||'')}"><label>Születés – év, dátum, hely vagy bizonytalan adat</label><input id="birth_info" maxlength="200" value="${esc(p.birth_info||'')}"><label>Elhalálozás</label><input id="death_info" maxlength="200" value="${esc(p.death_info||'')}"><label>Életrajz</label><textarea id="biography" maxlength="10000">${esc(p.biography||'')}</textarea>`}
